@@ -22,6 +22,7 @@ with DAG(
 
         context["outlet_events"][RAW_INGESTION_PENDING].extra = {
             "data_interval"     : params["data_interval"],
+            "tables"            : [],
         }
 
     emit_ready()

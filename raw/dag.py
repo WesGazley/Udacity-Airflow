@@ -161,43 +161,39 @@ with DAG(
         })
     )
 
-    with TaskGroup("validate_raw") as validate_raw:
-
-        # Pass the following SQL query to an SQLCheckOperator
-        # Use an athena connection id
-        SQLCheckOperator(
-            task_id="validate_logs_ingested",
-            conn_id=ATHENA_CONN_ID,
-            sql="""
-                SELECT COUNT(*) FROM raw.logs
-                WHERE data_interval = '{{ triggering_asset_events.for_asset(name='raw_ingestion_pending')[-1].extra['data_interval'] }}'
+    # Validate every discovered table, not just logs/songs by name -- keeps
+    # validation schema-driven so a newly discovered table is checked without
+    # editing this DAG.
+    validate_raw_tables = SQLCheckOperator.partial(
+        task_id="validate_raw_table_ingested",
+        conn_id=ATHENA_CONN_ID,
+        map_index_template="{{ task.parameters['table_name'] }}",
+    ).expand_kwargs(
+        table_keys.map(lambda key: {
+            "parameters": {"table_name": key.strip("/").split("/")[-1]},
+            "sql": f"""
+                SELECT COUNT(*)
+                FROM raw.{key.strip('/').split('/')[-1]}
+                WHERE data_interval = '{{{{ triggering_asset_events.for_asset(name='raw_ingestion_pending')[-1].extra['data_interval'] }}}}'
             """
-        )
-
-        # Pass the following SQL query to an SQLCheckOperator
-        # Use an athena connection id
-        SQLCheckOperator(
-            task_id="validate_songs_ingested",
-            conn_id=ATHENA_CONN_ID,
-            sql="""
-                SELECT COUNT(*) FROM raw.songs
-                WHERE data_interval = '{{ triggering_asset_events.for_asset(name='raw_ingestion_pending')[-1].extra['data_interval'] }}'
-            """
-        )
+        })
+    )
 
     # Define a task that sets `outlets` to the
     # Asset used to trigger the transactions dag
     @task(outlets=[RAW_INGESTION_COMPLETE])
-    def notify_transactions(**context) -> None:
+    def notify_transactions(table_prefixes: list[str], **context) -> None:
 
         data_interval = context["triggering_asset_events"][RAW_INGESTION_PENDING][-1].extra["data_interval"]
+        tables = [p.strip("/").split("/")[-1] for p in table_prefixes]
 
         # Add data_interval to the outlet's metadata
         context["outlet_events"][RAW_INGESTION_COMPLETE].extra = {
             "data_interval": data_interval,
+            "tables": tables,
         }
 
     # Set task dependencies
     # The glue job, validations, and the notification task
     # should run in sequential order
-    submit_glue_jobs >> validate_raw >> notify_transactions()
+    submit_glue_jobs >> validate_raw_tables >> notify_transactions(table_keys)

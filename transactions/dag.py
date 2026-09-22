@@ -240,8 +240,11 @@ with DAG(
         outlets=[TRANSACTIONS_COMPLETE],
         trigger_rule="none_failed"
         )
-    def notify_complete() -> None:
-        pass
+    def notify_complete(run_metadata: dict, **context) -> None:
+        context["outlet_events"][TRANSACTIONS_COMPLETE].extra = {
+            "data_interval": run_metadata["data_interval"],
+            "tables": [t["table"] for t in TABLES],
+        }
 
     # Wire dependencies
     for table in TABLES:
@@ -261,4 +264,4 @@ with DAG(
 
     # Set the `validate_transactions` task group upstream
     # to the `notify_complete` task function.
-    validate_transactions >> notify_complete()
+    validate_transactions >> notify_complete(run_metadata)
